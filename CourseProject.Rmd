@@ -1,0 +1,155 @@
+---
+title: "Practical Machine Learning Course Project Report"
+author: "Patrick Cher"
+date: "Aug 16, 2015"
+output:
+  html_document: default
+  pdf_document: null
+  toc: yes
+---
+
+### Load Libraries
+* Load libraries required for analysis
+* Utilise 4 cores to reduce time required to generate analysis
+* Set working directory
+
+```{r preparation}
+# load libraries
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(doMC)
+
+# for better performance, use 4 cores
+registerDoMC(cores=4)
+
+# set working directory
+setwd("/Users/patrickcher/Dropbox/Learning/Data Science/JHU Data Science/08 Practical Machine Learning/Course Project/Practical Machine Learning")
+```
+
+### Load Data
+* Clean up data by replacing NA strings with #DIV/0! or remove them
+* Remove near zero convariates
+* Calculate correlations
+
+```{r loadData}
+# load data from both training and testing set
+# replace #DIV/0! values with NA
+trainingData <- read.csv("pml-training.csv", row.names = 1, na.strings = c("#DIV/0!"))
+testingData <- read.csv("pml-testing.csv", row.names = 1, na.strings = c("#DIV/0!"))
+
+# remove near zero covariates
+nearZeroCovar <- nearZeroVar(trainingData, saveMetrics = T)
+trainingData <- trainingData[, !nearZeroCovar$nzv]
+
+# remove variables with more than 80% missing values
+naValues <- sapply(colnames(trainingData), 
+                   function(x) 
+                     if(sum(is.na(trainingData[, x])) > 0.8 * nrow(trainingData)) {
+                       return(T)
+                     }
+                   else{
+                     return(F)
+                   }
+              )
+
+trainingData <- trainingData[, !naValues]
+
+# calculate correlations
+correlations <- abs(sapply(colnames(trainingData[, -ncol(trainingData)]), 
+                           function(x) 
+                             cor(as.numeric(trainingData[, x]), 
+                                 as.numeric(trainingData$classe), 
+                                 method="spearman")
+                          )
+                    )
+```
+
+* From the plot below, there isn't any strong predictors that correlate with classe well.
+
+```{r dataplot}
+summary(correlations)
+
+# plot predictors 
+plot(trainingData[, names(which.max(correlations))], 
+     trainingData[, names(which.max(correlations[-which.max(correlations)]))], 
+     col = trainingData$classe, pch = 19, cex = 0.1, 
+     xlab = names(which.max(correlations)), 
+     ylab = names(which.max(correlations[-which.max(correlations)])))
+```
+* We will explore using boosting and random forest algorithm to generate more robust predictions.
+
+### Boosting Model
+* We will start by fitting the model with boosting algorithm and perfomr 10-fold cross validation to predict the classe
+
+```{r boostModel}
+set.seed(888)
+
+# fitting model with boosting algorithm and 10-fold cross validation to predict classe
+boostFit <- train(classe ~ ., method="gbm", data = trainingData, 
+                  verbose = F, trControl = trainControl(method = "cv", number = 10))
+```
+
+```{r boostPlot}
+boostFit
+
+# plot accuracy of the model on the scale of 0.9 and 1
+plot(boostFit, ylim = c(0.9, 1))
+```
+
+* The boosting algorithm produced a good model with up to 0.997 accuracy.
+* We will now try fitting the modeling with random forest algorithm to determine which algorithm produces better accuracy.
+
+### Random Forests Model
+* We will fit the model with random forest algorithm and similarly perform 10-fold cross validation to predict classe with other predictors.
+* We will keep the 10-fold cross validation so that comparison can be done against the boosting model.
+
+```{r randomForest}
+# Fit model with random forests algorithm and 10-fold cross validation 
+# to predict classe with all other predictors.
+set.seed(888)
+rfFit <- train(classe ~ ., method = "rf", data = trainingData, 
+               importance = T, trControl = trainControl(method = "cv", number = 10))
+
+```
+
+```{r randomForestPlot}
+rfFit
+# Plot accuracy of the model on the same scale as boosting model for comparison.
+plot(rfFit, ylim = c(0.9, 1))
+```
+
+```{r randomForestImpt}
+impt <- varImp(rfFit)$importance
+impt$max <- apply(impt, 1, max)
+impt <- impt[order(impt$max, decreasing = T), ]
+```
+
+* From the plots, this model has better performance in accuracy.
+* The random forests algorithm produced more accurate model with accuracy closer to 1.
+
+### Final Model
+* Comparing the results of boosting model and random forests model, random forests model has better accuracy. Hence it will be used for the final model.
+* The estimated out of sample error rate for random forests model is 0.04%.
+* The final model contains 500 trees with 40 variables tried at each split.
+
+```{r predictionModel}
+# final model
+rfFit$finalModel
+
+# prediction
+(prediction <- as.character(predict(rfFit, testingData)))
+```
+
+```{r results}
+# write prediction files
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("./prediction/problem_id_", i, ".txt")
+    write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, col.names = FALSE)
+  }
+}
+
+pml_write_files(prediction)
+```
